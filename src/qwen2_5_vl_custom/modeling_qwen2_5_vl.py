@@ -50,6 +50,7 @@ from transformers.utils import (
 )
 from .configuration_qwen2_5_vl import Qwen2_5_VLConfig, Qwen2_5_VLVisionConfig
 from src.qwen2_5_vl_custom.depth_anything_v2.dinov2 import DINOv2
+from src.training.constants import *
 
 if is_flash_attn_2_available():
     from flash_attn import flash_attn_varlen_func
@@ -1516,7 +1517,9 @@ class InterpolateMLPProjector(nn.Module):
 
         self.mlp = nn.Sequential(
             nn.Linear(in_dim, out_dim),
-            nn.ReLU(),              # 可选
+            nn.GELU(),              # 可选
+            nn.Linear(out_dim, out_dim),
+            nn.GELU(),           # 可选
             nn.LayerNorm(out_dim)  # 可选
         )
 
@@ -1542,6 +1545,116 @@ class InterpolateMLPProjector(nn.Module):
 
         return x  # 最终形状: [B, N', 2048]
 
+class PatchPosEmbedGenerator(torch.nn.Module):
+    def __init__(self,
+                 max_image_size: tuple,  # (H_max, W_max)
+                 patch_size: int,
+                 embed_dim: int,
+                 use_temporal: bool = False,
+                 max_frames: int = None):
+        super().__init__()
+        Hm, Wm = max_image_size
+        assert Hm % patch_size == 0 and Wm % patch_size == 0
+        self.patch_size = patch_size
+        self.embed_dim = embed_dim
+        self.gh_max = Hm // patch_size
+        self.gw_max = Wm // patch_size
+        self.num_max = self.gh_max * self.gw_max
+
+        # 可学空间编码表 (1, num_max, D)
+        self.spatial_emb = torch.nn.Parameter(
+            torch.zeros(1, self.num_max, embed_dim))
+        torch.nn.init.trunc_normal_(self.spatial_emb, std=0.02)
+
+        self.use_temporal = use_temporal
+        if use_temporal:
+            assert max_frames is not None
+            # 时间编码表 (max_frames, 1, D)
+            self.temporal_emb = torch.nn.Parameter(
+                torch.zeros(max_frames, 1, embed_dim))
+            torch.nn.init.trunc_normal_(self.temporal_emb, std=0.02)
+        else:
+            self.register_parameter('temporal_emb', None)
+
+    def forward(self, T: int, H: int, W: int):
+        """
+        Args:
+          T: 帧数
+          H, W: 实际图高、宽（必须能整除 patch_size，并 ≤ max_image_size）
+        Returns:
+          pe: Tensor of shape (T, n, D)  n = (H/patch_size)*(W/patch_size)
+        """
+        gh, gw = H // self.patch_size, W // self.patch_size
+        assert gh <= self.gh_max and gw <= self.gw_max
+        n = gh * gw
+        device = self.spatial_emb.device
+
+        # 1) 计算空间索引，按 row-major 从大表里裁剪出前 n 个
+        rows = torch.arange(gh, device=device) * self.gw_max
+        cols = torch.arange(gw, device=device)
+        idx  = (rows.unsqueeze(1) + cols.unsqueeze(0)).view(-1)  # (n,)
+        pe_space = self.spatial_emb[0, idx, :]                  # (n, D)
+
+        # 2) 扩成 (T, n, D)
+        pe = pe_space.unsqueeze(0).expand(T, -1, -1)
+
+        # 3) 可选再加上时间编码
+        if self.use_temporal:
+            pe = pe + self.temporal_emb[:T]  # (T,1,D) -> broadcast to (T,n,D)
+
+        flat_pe = pe.view(-1, self.embed_dim)  # (T*n, D)
+        return flat_pe
+
+class SpatialTemporalCoordMLP(nn.Module):
+    """
+    通过归一化的 (t, h, w) 坐标生成 Patch 级别时空位置编码。
+    
+    Args:
+        embed_dim (int): 输出的编码维度（如 2048）。
+        hidden_dim (int): MLP 隐藏层维度。
+        patch_size (int): Patch 的边长（如 28）。
+    """
+    def __init__(self, embed_dim=2048, hidden_dim=512, patch_size=28):
+        super().__init__()
+        self.patch_size = patch_size
+        self.embed_dim = embed_dim
+        # 两层 MLP：3 -> hidden_dim -> embed_dim
+        self.mlp = nn.Sequential(
+            nn.Linear(3, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, embed_dim)
+        )
+
+    def forward(self, T: int, H: int, W: int):
+        """
+        Args:
+            T (int): 帧数或图片数量。
+            H, W (int): 图像高、宽（需能被 patch_size 整除）。
+        
+        Returns:
+            Tensor: 形状 (T, num_patches, embed_dim) 的时空位置编码。
+        """
+        # 计算每帧的 Patch 网格数
+        gh, gw = H // self.patch_size, W // self.patch_size
+        device = next(self.parameters()).device
+
+        # 归一化坐标
+        t_idx = torch.arange(T, device=device, dtype=torch.float32) / max(T-1, 1)
+        i_idx = torch.arange(gh, device=device, dtype=torch.float32) / max(gh-1, 1)
+        j_idx = torch.arange(gw, device=device, dtype=torch.float32) / max(gw-1, 1)
+
+        # 三维网格 (T, gh, gw)
+        tt, ii, jj = torch.meshgrid(t_idx, i_idx, j_idx, indexing='ij')
+        # 拼成 (T, gh, gw, 3)
+        coords = torch.stack([tt, ii, jj], dim=-1)
+        # 展平成 (T*gh*gw, 3)
+        coords_flat = coords.view(-1, 3).to(dtype=torch.bfloat16)
+
+        # 过 MLP 得到 (T*gh*gw, embed_dim)
+        pe_flat = self.mlp(coords_flat)
+
+        return pe_flat
+    
 class Qwen2_5_VLForConditionalGeneration(Qwen2_5_VLPreTrainedModel, GenerationMixin):
     _tied_weights_keys = ["lm_head.weight"]
     config_class = Qwen2_5_VLConfig
@@ -1550,10 +1663,45 @@ class Qwen2_5_VLForConditionalGeneration(Qwen2_5_VLPreTrainedModel, GenerationMi
     def __init__(self, config):
         super().__init__(config)
         self.visual = Qwen2_5_VisionTransformerPretrainedModel._from_config(config.vision_config)
-        self.depth_encoder = None
-        # self.depth_encoder = DINOv2(model_name='vitb')
+        # self.depth_encoder = None
+        self.depth_encoder = DINOv2(model_name='vitb')
+        # self.projector = None
         self.projector = InterpolateMLPProjector()
-        self.fusion_norm = nn.LayerNorm(2048)
+        # self.position_embedding = None
+        # Pos Emb 1
+        # self.position_embedding = PatchPosEmbedGenerator(
+        #     max_image_size=(500, 500),
+        #     patch_size=2,
+        #     embed_dim=2048,
+        #     use_temporal=True,
+        #     max_frames=100
+        # )
+        # Pos Emb 2
+        self.position_embedding = SpatialTemporalCoordMLP(
+            embed_dim=2048,
+            hidden_dim=512,
+            patch_size=2,
+        )
+        # Architecture 1(加法融合)
+        # self.fusion_projector = None
+        # self.fusion_projector = nn.Sequential(
+        #     nn.LayerNorm(2048),
+        #     nn.Linear(2048, 2048),
+        #     nn.GELU(),
+        #     nn.Linear(2048, 2048),
+        #     nn.LayerNorm(2048),
+        # )
+        # Architecture 2(sequence concat)
+        #
+        # Architecture 3(channel concat)
+        # self.fusion_projector = None
+        # self.fusion_projector = nn.Sequential(
+        #     nn.LayerNorm(4096),
+        #     nn.Linear(4096, 2048),
+        #     nn.GELU(),
+        #     nn.Linear(2048, 2048),
+        #     nn.LayerNorm(2048),
+        # )
         self.model = Qwen2_5_VLModel(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
@@ -1830,11 +1978,29 @@ class Qwen2_5_VLForConditionalGeneration(Qwen2_5_VLPreTrainedModel, GenerationMi
             if pixel_values is not None:
                 pixel_values = pixel_values.type(self.visual.dtype)
                 image_embeds = self.visual(pixel_values, grid_thw=image_grid_thw)
-                depth_embeds = self.depth_encoder.get_intermediate_layers(depth_values, [2, 5, 8, 11], return_class_token=True)
-                fused_embeds = image_embeds
-                for i in range(len(depth_embeds)):
-                    fused_embeds += self.projector(depth_embeds[i][0], image_grid_thw[0][1], image_grid_thw[0][2]).reshape(-1, 2048)
-                fused_embeds = self.fusion_norm(fused_embeds)
+                col = 0
+                depth_images = []
+                for (t, h, w) in image_grid_thw:
+                    num = t * h * w * 14 * 14
+                    seg = depth_values[:, col : col + num]
+                    depth_image = seg.view(3, t, h * 14, w * 14).permute(1, 0, 2, 3).contiguous()
+                    depth_images.append(depth_image) 
+                    col += num
+                depth_embeds = []
+                for i in range(len(depth_images)):
+                    depth_embed = self.depth_encoder.get_intermediate_layers(depth_images[i], [8], return_class_token=True)
+                    depth_embed = self.projector(depth_embed[0][0], image_grid_thw[i][1], image_grid_thw[i][2]).reshape(-1, 2048)
+                    depth_embeds.append(depth_embed)
+                depth_embeds = torch.cat(depth_embeds, dim=0)
+
+                pos_embeds = []
+                for i in range(len(depth_images)):
+                    t, h, w = image_grid_thw[i]
+                    pos_embed = self.position_embedding(t, h, w)
+                    pos_embeds.append(pos_embed)
+                pos_embeds = torch.cat(pos_embeds, dim=0)
+                # Architecture 1
+                fused_embeds = image_embeds + depth_embeds + pos_embeds
                 n_image_tokens = (input_ids == self.config.image_token_id).sum().item()
                 n_image_features = fused_embeds.shape[0]
                 if n_image_tokens != n_image_features:
@@ -1849,9 +2015,91 @@ class Qwen2_5_VLForConditionalGeneration(Qwen2_5_VLPreTrainedModel, GenerationMi
                 fused_embeds = fused_embeds.to(inputs_embeds.device, inputs_embeds.dtype)
                 inputs_embeds = inputs_embeds.masked_scatter(image_mask, fused_embeds)
 
+                # Architecture 2
+                # batch_size, seq_length, _ = inputs_embeds.shape
+                # depth_embeds = self.projector(depth_embeds[0][0], image_grid_thw[0][1], image_grid_thw[0][2]).reshape(batch_size, -1, 2048)
+                # n_image_tokens = (input_ids == self.config.image_token_id).sum().item()
+                # n_image_features = image_embeds.shape[0]
+                # if n_image_tokens != n_image_features:
+                #     raise ValueError(
+                #         f"Image features and image tokens do not match: tokens: {n_image_tokens}, features {n_image_features}"
+                #     )
+
+                # mask = input_ids == self.config.image_token_id
+                # last_image_token_indices = mask.float().cumsum(dim=1).eq(mask.sum(dim=1, keepdim=True)).long() * mask.long()
+                # insert_indices = last_image_token_indices.argmax(dim=1) + 1  # 位置之后插入，所以 +1
+                # new_inputs = []
+                # new_input_ids = []
+                # new_attention_mask = []
+                # new_labels = []
+                # for i in range(inputs_embeds.size(0)):
+                #     idx = insert_indices[i]
+                #     before = inputs_embeds[i, :idx, :]
+                #     after = inputs_embeds[i, idx:, :]
+                #     inserted = depth_embeds[i]  # shape: [num_depth_tokens, embed_dim]
+                #     new_input = torch.cat([before, inserted, after], dim=0)
+                #     new_inputs.append(new_input)
+                #     num_insert = depth_embeds[i].shape[0]
+                #     inserted_ids = torch.full((num_insert,), self.config.image_token_id, dtype=torch.long, device=input_ids.device)
+                #     new_ids = torch.cat([input_ids[i, :idx], inserted_ids, input_ids[i, idx:]], dim=0)
+                #     new_input_ids.append(new_ids)
+                #     inserted_mask = torch.full((num_insert,), True, dtype=torch.bool, device=input_ids.device)
+                #     new_mask = torch.cat([attention_mask[i, :idx], inserted_mask, attention_mask[i, idx:]], dim=0)
+                #     new_attention_mask.append(new_mask)
+                #     inserted_label = torch.full((num_insert,), IGNORE_INDEX, dtype=torch.long, device=input_ids.device)
+                #     # new_label = torch.cat([labels[i, :idx], inserted_label, labels[i, idx:]], dim=0)
+                #     # new_labels.append(new_label)
+                # inputs_embeds = torch.stack(new_inputs, dim=0)
+                # input_ids = torch.stack(new_input_ids, dim=0)
+                # attention_mask = torch.stack(new_attention_mask, dim=0)
+                # # labels = torch.stack(new_labels, dim=0)
+
+                # Architecture 3
+                # batch_size, seq_length, _ = inputs_embeds.shape
+                # depth_embeds = self.projector(depth_embeds[0][0], image_grid_thw[0][1], image_grid_thw[0][2]).reshape(-1, 2048)
+                # fused_embeds = torch.concat((image_embeds, depth_embeds), dim=-1)
+                # fused_embeds = self.fusion_projector(fused_embeds)
+                # n_image_tokens = (input_ids == self.config.image_token_id).sum().item()
+                # n_image_features = fused_embeds.shape[0]
+                # if n_image_tokens != n_image_features:
+                #     raise ValueError(
+                #         f"Image features and image tokens do not match: tokens: {n_image_tokens}, features {n_image_features}"
+                #     )
+
+                # mask = input_ids == self.config.image_token_id
+                # mask_unsqueezed = mask.unsqueeze(-1)
+                # mask_expanded = mask_unsqueezed.expand_as(inputs_embeds)
+                # image_mask = mask_expanded.to(inputs_embeds.device)
+                # fused_embeds = fused_embeds.to(inputs_embeds.device, inputs_embeds.dtype)
+                # inputs_embeds = inputs_embeds.masked_scatter(image_mask, fused_embeds)
+
             if pixel_values_videos is not None:
                 pixel_values_videos = pixel_values_videos.type(self.visual.dtype)
                 video_embeds = self.visual(pixel_values_videos, grid_thw=video_grid_thw)
+                col = 0
+                depth_images = []
+                for (t, h, w) in video_grid_thw:
+                    num = 2 * t * h * w * 14 * 14
+                    seg = depth_values[:, col : col + num]
+                    depth_image = seg.view(3, t * 2, h * 14, w * 14).permute(1, 0, 2, 3).contiguous()
+                    depth_images.append(depth_image) 
+                    col += num
+                depth_embeds = []
+                for i in range(len(depth_images)):
+                    depth_embed = self.depth_encoder.get_intermediate_layers(depth_images[i], [8], return_class_token=True)
+                    depth_embed = (depth_embed[0][0][0::2] + depth_embed[0][0][1::2]) / 2
+                    depth_embed = self.projector(depth_embed, video_grid_thw[i][1], video_grid_thw[i][2]).reshape(-1, 2048)
+                    depth_embeds.append(depth_embed)
+                depth_embeds = torch.cat(depth_embeds, dim=0)
+
+                pos_embeds = []
+                for i in range(len(depth_images)):
+                    t, h, w = video_grid_thw[i]
+                    pos_embed = self.position_embedding(t, h, w)
+                    pos_embeds.append(pos_embed)
+                pos_embeds = torch.cat(pos_embeds, dim=0)
+                
+                fused_embeds = video_embeds + depth_embeds + pos_embeds
                 n_video_tokens = (input_ids == self.config.video_token_id).sum().item()
                 n_video_features = video_embeds.shape[0]
                 if n_video_tokens != n_video_features:
@@ -1864,8 +2112,8 @@ class Qwen2_5_VLForConditionalGeneration(Qwen2_5_VLPreTrainedModel, GenerationMi
                 mask_expanded = mask_unsqueezed.expand_as(inputs_embeds)
                 video_mask = mask_expanded.to(inputs_embeds.device)
 
-                video_embeds = video_embeds.to(inputs_embeds.device, inputs_embeds.dtype)
-                inputs_embeds = inputs_embeds.masked_scatter(video_mask, video_embeds)
+                fused_embeds = fused_embeds.to(inputs_embeds.device, inputs_embeds.dtype)
+                inputs_embeds = inputs_embeds.masked_scatter(video_mask, fused_embeds)
 
             if attention_mask is not None:
                 attention_mask = attention_mask.to(inputs_embeds.device)

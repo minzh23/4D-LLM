@@ -4,12 +4,13 @@ import gc
 import cv2
 import torch
 from PIL import Image
-from tqdm import tqdm  # 添加进度条
+from tqdm import tqdm
 from src.qwen2_5_vl_custom import Qwen2_5_VLForConditionalGeneration
 # from transformers import Qwen2_5_VLForConditionalGeneration
 from src.training.data import image2tensor
 from transformers import AutoProcessor
-from qwen_vl_utils import process_vision_info  # 需要确保 qwen_vl_utils 可用
+from qwen_vl_utils import process_vision_info
+import wandb
 
 # import debugpy
 # debugpy.listen(("127.0.0.1", 5678))
@@ -17,60 +18,70 @@ from qwen_vl_utils import process_vision_info  # 需要确保 qwen_vl_utils 可�
 # debugpy.wait_for_client()
 # print("Debugger attached, starting execution...")
 
-# **1. 加载 Qwen2.5-VL 模型**
-checkpoint_path = "output/depth_finetune_all/checkpoint-612"  # 你的 checkpoint 目录
-original_model_path = "Qwen/Qwen2.5-eVL-3B-Instruct"  # 原始模型路径
-
-# 加载模型
-model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-    checkpoint_path, torch_dtype="auto", device_map="auto", attn_implementation="flash_attention_2",
+wandb.init(
+    project="4d-llm-eval",  # 项目名称，替换为你自己的项目名
+    name="mlp_pos_emb",  # 本次 run 的名字
 )
-model.eval()  # 设为推理模式
 
-# 加载 processor
+# 1. 加载模型
+checkpoint_path = "output/mlp_pos_emb/checkpoint-1224"
+original_model_path = "Qwen/Qwen2.5-eVL-3B-Instruct"
+
+model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+    checkpoint_path,
+    torch_dtype="auto",
+    device_map="auto",
+    attn_implementation="flash_attention_2",
+)
+model.eval()
+
 processor = AutoProcessor.from_pretrained(checkpoint_path)
 
-# **2. 读取测试集**
-test_file = "OmniSpatial/test_data.json"  # 测试数据 JSON 文件
+# 2. 加载测试集
+test_file = "OmniSpatial/test_data.json"
 with open(test_file, "r", encoding="utf-8") as f:
     test_data = json.load(f)
 
-# **3. 处理测试集**
-correct_count = 0  # 统计正确个数
-total_count = len(test_data)  # 用于存储所有图片的 tensor
+# 3. 初始化统计
+correct_count = 0
+total_count = len(test_data)
+interval = 10
+accuracy_log = []
 
+# 4. 主循环
 with tqdm(total=total_count, desc="Processing", unit="sample") as pbar:
     for sample in test_data:
-        image_path = "OmniSpatial//" + sample["image"]  # 图片路径
+        image_path = "OmniSpatial//" + sample["image"]
         all_image_tensors = []
         conversation = sample["conversations"]
-        
-        # **构造输入对话**
+
         input_text = conversation[0]["value"]
-        input_text += "\nAnswer in the format: The correct answer is A/B/C/D."
-        true_answer = conversation[1]["value"].strip()  # 获取真实答案
-        
-        # **加载图片**
+        input_text += "Answer in the format: The correct answer is A/B/C/D."
+        true_answer = conversation[1]["value"].strip()
+
+        # 加载图像
         image = Image.open(image_path).convert("RGB")
         image_tensor, _ = image2tensor(cv2.imread(image_path))
         image_tensor = image_tensor.to(dtype=torch.float16, device=model.device)
         all_image_tensors.append(image_tensor)
 
-        # **转换为 Qwen2.5-VL 的对话格式**
+        # 构造消息格式
         messages = [
             {
                 "role": "user",
                 "content": [
-                    {"type": "image", "image": image, 
-                     "resized_height": image_tensor.shape[2], "resized_width": image_tensor.shape[3]
+                    {
+                        "type": "image",
+                        "image": image,
+                        "resized_height": image_tensor.shape[2],
+                        "resized_width": image_tensor.shape[3],
                     },
                     {"type": "text", "text": input_text},
-
                 ],
             }
         ]
 
-        # **4. 预处理文本 + 图片**
+        # 文本 + 图像处理
         text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         image_inputs, video_inputs = process_vision_info(messages)
         inputs = processor(
@@ -83,36 +94,50 @@ with tqdm(total=total_count, desc="Processing", unit="sample") as pbar:
         inputs["depth_values"] = torch.cat(all_image_tensors, dim=0).to(torch.bfloat16)
         inputs = inputs.to(model.device)
 
-        # **5. 让模型生成回答**
+        # 推理
         with torch.no_grad():
             generated_ids = model.generate(**inputs, max_new_tokens=100)
 
-        # **6. 解析模型输出**
         generated_ids_trimmed = [
-            out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+            out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
         ]
         response = processor.batch_decode(
             generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )[0]
-        
-        # **7. 用正则表达式提取答案**
+
         match = re.search(r"The correct answer is ([A-D])", response)
         predicted_answer = match.group(1) if match else "None"
 
-        # **8. 统计正确率**
+        # 判断是否正确
         if predicted_answer in true_answer:
             correct_count += 1
 
-        # **9. 释放 GPU 变量，防止显存泄漏**
+        # 清理显存
         del inputs, generated_ids
         torch.cuda.empty_cache()
         gc.collect()
 
-        # **10. 更新进度条**
-        accuracy = correct_count / (pbar.n + 1) * 100
+        # 更新进度条
+        accuracy = correct_count / (pbar.n + 2) * 100
         pbar.set_postfix(Correct=correct_count, Accuracy=f"{accuracy:.2f}%")
         pbar.update(1)
 
-# **11. 计算准确率**
+        # 每 interval 步记录准确率
+        if (pbar.n + 1) % interval == 0 or (pbar.n + 1) == total_count:
+            print(f"Step {pbar.n + 1}: Correct: {correct_count}, Accuracy: {accuracy:.2f}%")
+            accuracy_log.append({
+                "step": pbar.n + 1,
+                "correct": correct_count,
+                "accuracy": round(accuracy, 2)
+            })
+            wandb.log({
+                "step": pbar.n + 1,
+                "correct": correct_count,
+                "accuracy": accuracy
+            })
+
+# 5. 最终结果
 accuracy = correct_count / total_count * 100
-print(f"Total: {total_count}, Correct: {correct_count}, Accuracy: {accuracy:.2f}%")
+print(f"\nTotal: {total_count}, Correct: {correct_count}, Accuracy: {accuracy:.2f}%")
+
+wandb.finish()

@@ -1,9 +1,11 @@
 import os
+import json
 import torch
 from peft import LoraConfig, get_peft_model
 import ast
 from transformers import AutoProcessor, BitsAndBytesConfig, Qwen2VLForConditionalGeneration, HfArgumentParser
 from src.qwen2_5_vl_custom import Qwen2_5_VLForConditionalGeneration
+from src.qwen2_5_vl_custom import Qwen2_5_VLProcessor
 # from transformers import Qwen2_5_VLForConditionalGeneration
 from training.trainer import QwenTrainer
 from training.data import make_supervised_data_module
@@ -13,6 +15,9 @@ import pathlib
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl, apply_liger_kernel_to_qwen2_5_vl
 from monkey_patch_forward import replace_qwen2_5_with_mixed_modality_forward, replace_qwen_2_with_mixed_modality_forward
 from src.qwen2_5_vl_custom.depth_anything_v2.dinov2 import DINOv2
+from src.qwen2_5_vl_custom.modeling_qwen2_5_vl import InterpolateMLPProjector, PatchPosEmbedGenerator, SpatialTemporalCoordMLP
+import torch.nn as nn
+import wandb
 
 local_rank = None
 
@@ -66,7 +71,13 @@ def configure_llm(model, training_args):
     llm_params = model.model.parameters()
     set_requires_grad(llm_params, not training_args.freeze_llm)
 
-
+def is_json_serializable(v):
+    try:
+        json.dumps(v)
+        return True
+    except Exception:
+        return False
+    
 def train():
     global local_rank
 
@@ -74,6 +85,13 @@ def train():
         (ModelArguments, DataArguments, TrainingArguments))
     
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+
+    wandb.init(
+        project=training_args.wandb_project,
+        name=training_args.wandb_run_name,
+        config={k: v for k, v in vars(training_args).items() if is_json_serializable(v)}  # 可记录所有训练参数
+    )
+
     use_liger = training_args.use_liger
     if "Qwen2.5" in model_args.model_id:
         # It monkey patches the forward to handle mixed modality inputs.
@@ -153,6 +171,43 @@ def train():
     model.depth_encoder.load_state_dict(depth_encoder_state_dict)
     configure_depth_encoder(model_to_configure, training_args, compute_dtype, training_args.device)
 
+    model.projector = InterpolateMLPProjector()
+
+    # model.position_embedding = PatchPosEmbedGenerator(
+    #     max_image_size=(500, 500),
+    #     patch_size=2,
+    #     embed_dim=2048,
+    #     use_temporal=True,
+    #     max_frames=100
+    # )
+
+    model.position_embedding = SpatialTemporalCoordMLP(
+        embed_dim=2048,
+        hidden_dim=512,
+        patch_size=2,
+    )
+    
+    # Architecture 1
+    # model.fusion_projector = nn.Sequential(
+    #         nn.LayerNorm(2048),
+    #         nn.Linear(2048, 2048),
+    #         nn.GELU(),
+    #         nn.Linear(2048, 2048),
+    #         nn.LayerNorm(2048),
+    #     )
+
+    # Architecture 2
+    #
+
+    # Architecture 3
+    # model.fusion_projector = nn.Sequential(
+    #         nn.LayerNorm(4096),
+    #         nn.Linear(4096, 2048),
+    #         nn.GELU(),
+    #         nn.Linear(2048, 2048),
+    #         nn.LayerNorm(2048),
+    #     )
+
     if training_args.bits in [4,8]:
         model.config.torch_dtype = (torch.float32 if training_args.fp16 else (torch.bfloat16 if training_args.bf16 else torch.float32))
         from peft import prepare_model_for_kbit_training
@@ -179,7 +234,7 @@ def train():
         rank0_print("Adding LoRA to the model...")
         model = get_peft_model(model, peft_config)
 
-    processor = AutoProcessor.from_pretrained(model_args.model_id,
+    processor = Qwen2_5_VLProcessor.from_pretrained(model_args.model_id,
                                             # The default setting is padding_side="left"
                                             # When training using the right-side padding is more efficient.
                                               padding_side="right")
@@ -228,7 +283,7 @@ def train():
         )
 
         non_lora_state_dict = get_peft_state_non_lora_maybe_zero_3(
-            model.named_parameters(), require_grad_only=False
+            model.named_parameters(),  require_grad_only=False
         )
 
         if local_rank == 0 or local_rank == -1:
@@ -237,13 +292,13 @@ def train():
             torch.save(non_lora_state_dict, os.path.join(training_args.output_dir, "non_lora_state_dict.bin"))
     else:
         safe_save_model_for_hf_trainer(trainer, output_dir=training_args.output_dir)
-
-
+    
+    # wandb.finish()
 
 if __name__ == "__main__":
-    # import debugpy
-    # debugpy.listen(("127.0.0.1", 5678))
-    # print("Waiting for debugger to attach...")
-    # debugpy.wait_for_client()
-    # print("Debugger attached, starting execution...")
+    import debugpy
+    debugpy.listen(("127.0.0.1", 5678))
+    print("Waiting for debugger to attach...")
+    debugpy.wait_for_client()
+    print("Debugger attached, starting execution...")
     train()

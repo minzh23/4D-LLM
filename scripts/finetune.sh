@@ -6,9 +6,9 @@
 MODEL_NAME="Qwen/Qwen2.5-VL-3B-Instruct"
 # MODEL_NAME="Qwen/Qwen2.5-VL-7B-Instruct"
 
-GLOBAL_BATCH_SIZE=2
+GLOBAL_BATCH_SIZE=1
 BATCH_PER_DEVICE=1
-NUM_DEVICES=2
+NUM_DEVICES=1
 GRAD_ACCUM_STEPS=$((GLOBAL_BATCH_SIZE / (BATCH_PER_DEVICE * NUM_DEVICES)))
 
 export PYTHONPATH=src:$PYTHONPATH
@@ -29,7 +29,7 @@ deepspeed src/training/train.py \
     --bf16 True \
     --fp16 False \
     --disable_flash_attn2 False \
-    --output_dir output/depth_finetune_all \
+    --output_dir output/mlp_pos_emb \
     --num_train_epochs 1 \
     --per_device_train_batch_size $BATCH_PER_DEVICE \
     --gradient_accumulation_steps $GRAD_ACCUM_STEPS \
@@ -49,4 +49,7 @@ deepspeed src/training/train.py \
     --save_strategy "steps" \
     --save_steps 200 \
     --save_total_limit 10 \
-    --dataloader_num_workers 4
+    --dataloader_num_workers 4 \
+    --wandb_project 4d-llm \
+    --wandb_run_name mlp_pos_emb \
+    --report_to wandb \

@@ -3,6 +3,7 @@ import os
 import cv2
 from dataclasses import dataclass, field
 from typing import Dict
+import numpy as np
 import torch
 import transformers
 import ujson as json
@@ -184,8 +185,9 @@ class SupervisedDataset(Dataset):
                     if not image_file.startswith("http"):
                         image_file = os.path.join(image_folder, image_file)
                 image_tensor, _ = image2tensor(cv2.imread(image_file))
-                all_image_tensors.append(image_tensor)
                 images.append(get_image_info(image_file, self.image_min_pixel, self.image_max_pixel, image_tensor.shape[3], image_tensor.shape[2]))
+                image_tensor_flat = image_tensor.permute(1, 0, 2, 3).contiguous().view(image_tensor.shape[1], -1)
+                all_image_tensors.append(image_tensor_flat)
 
         elif "video" in sources:
             is_video = True
@@ -200,12 +202,21 @@ class SupervisedDataset(Dataset):
                 video_files = [video_files]
 
             videos = []
+            all_image_tensors = []
             for video_file in video_files:
                 if not os.path.exists(video_file):
                     if not video_file.startswith("http"):
                         video_file = os.path.join(video_folder, video_file)
                 video_input, video_kwargs = get_video_info(video_file, self.video_min_pixel, self.video_max_pixel, self.video_resized_w, self.video_resized_h, self.data_args.fps)
+                for raw_image in video_input:
+                    np_img = (raw_image.permute(1,2,0).cpu().numpy()).astype(np.uint8)
+                    np_img = cv2.cvtColor(np_img, cv2.COLOR_RGB2BGR)
+                    image_tensor, _ = image2tensor(np_img, input_size_h=38, input_size_w=38)
+                    image_tensor_flat = image_tensor.permute(1, 0, 2, 3).contiguous().view(image_tensor.shape[1], -1)
+                    all_image_tensors.append(image_tensor_flat)
+
                 videos.append(video_input)
+
         else:
             grid_key = None
             pixel_key = None
@@ -294,7 +305,7 @@ class SupervisedDataset(Dataset):
         if pixel_key and grid_key:
             pixel_values = torch.cat(all_pixel_values, dim=0)
             image_thw = torch.cat(all_image_grid_thw, dim=0)
-            image_tensors = torch.cat(all_image_tensors, dim=0)
+            image_tensors = torch.cat(all_image_tensors, dim=1)
             data_dict[pixel_key] = pixel_values
             data_dict[grid_key] = image_thw
             data_dict["depth_values"] = image_tensors
@@ -325,6 +336,7 @@ class DataCollatorForSupervisedDataset(object):
             keys = example.keys()
             if "pixel_values_videos" in keys:
                 batch_pixel_video_values.append(example["pixel_values_videos"])
+                batch_depth_values.append(example["depth_values"])
                 batch_video_thw.append(example["video_grid_thw"])
             elif "pixel_values" in keys:
                 batch_pixel_values.append(example["pixel_values"])
@@ -355,16 +367,16 @@ class DataCollatorForSupervisedDataset(object):
             image_thw = torch.cat(batch_image_thw, dim=0)
             data_dict["pixel_values"] = pixel_values
             data_dict["image_grid_thw"] = image_thw
-        
-        if(len(batch_depth_values) > 0):
-            depth_values = torch.cat(batch_depth_values, dim=0)
-            data_dict["depth_values"] = depth_values
 
         if len(batch_pixel_video_values) > 0:
             pixel_video_values = torch.cat(batch_pixel_video_values, dim=0)
             video_thw = torch.cat(batch_video_thw, dim=0)
             data_dict["pixel_values_videos"] = pixel_video_values
             data_dict["video_grid_thw"] = video_thw
+
+        if(len(batch_depth_values) > 0):
+            depth_values = torch.cat(batch_depth_values, dim=1)
+            data_dict["depth_values"] = depth_values
 
         if len(batch_second_per_grid_ts) > 0:
             data_dict["second_per_grid_ts"] = batch_second_per_grid_ts

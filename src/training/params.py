@@ -56,6 +56,15 @@ class TrainingArguments(TrainingArguments):
     lora_namespan_exclude: str = field(default=None, metadata={"help": "List of namespan to exclude for LoRA"})
     num_lora_modules: int = -1
     use_liger: bool = True
+    wandb_project: Optional[str] = field(
+        default="4d-llm",
+        metadata={"help": "WandB project name"}
+    )
+    wandb_run_name: Optional[str] = field(
+        default=None,
+        metadata={"help": "WandB run name (default to auto-generated if None)"}
+    )
+
 
 
 @dataclass
