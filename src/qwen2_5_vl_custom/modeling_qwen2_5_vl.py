@@ -1517,104 +1517,33 @@ class InterpolateMLPProjector(nn.Module):
 
         self.mlp = nn.Sequential(
             nn.Linear(in_dim, out_dim),
-            nn.GELU(),              # 可选
+            nn.GELU(),              
             nn.Linear(out_dim, out_dim),
-            nn.GELU(),           # 可选
-            nn.LayerNorm(out_dim)  # 可选
+            nn.GELU(),           
+            nn.LayerNorm(out_dim) 
         )
 
     def forward(self, x, height, width):
         B, N, C = x.shape
         assert N == height * width, "Token 数量和空间尺寸不匹配"
 
-        # [B, N, C] -> [B, C, H, W]
         x = x.transpose(1, 2).reshape(B, C, height, width)
 
         h_new, w_new = height // self.ratio, width // self.ratio
         x = F.interpolate(x, size=(h_new, w_new), mode='bilinear', align_corners=False)
 
-        # flatten 回 token 序列: [B, C, H', W'] -> [B, N', C]
         x = x.flatten(2).transpose(1, 2)
-
-        # 用 MLP 升维： [B, N', 768] -> [B, N', 2048]
+        
         x = self.mlp(x)
 
-        return x  # 最终形状: [B, N', 2048]
-
-class PatchPosEmbedGenerator(torch.nn.Module):
-    def __init__(self,
-                 max_image_size: tuple,  # (H_max, W_max)
-                 patch_size: int,
-                 embed_dim: int,
-                 use_temporal: bool = False,
-                 max_frames: int = None):
-        super().__init__()
-        Hm, Wm = max_image_size
-        assert Hm % patch_size == 0 and Wm % patch_size == 0
-        self.patch_size = patch_size
-        self.embed_dim = embed_dim
-        self.gh_max = Hm // patch_size
-        self.gw_max = Wm // patch_size
-        self.num_max = self.gh_max * self.gw_max
-
-        # 可学空间编码表 (1, num_max, D)
-        self.spatial_emb = torch.nn.Parameter(
-            torch.zeros(1, self.num_max, embed_dim))
-        torch.nn.init.trunc_normal_(self.spatial_emb, std=0.02)
-
-        self.use_temporal = use_temporal
-        if use_temporal:
-            assert max_frames is not None
-            # 时间编码表 (max_frames, 1, D)
-            self.temporal_emb = torch.nn.Parameter(
-                torch.zeros(max_frames, 1, embed_dim))
-            torch.nn.init.trunc_normal_(self.temporal_emb, std=0.02)
-        else:
-            self.register_parameter('temporal_emb', None)
-
-    def forward(self, T: int, H: int, W: int):
-        """
-        Args:
-          T: 帧数
-          H, W: 实际图高、宽（必须能整除 patch_size，并 ≤ max_image_size）
-        Returns:
-          pe: Tensor of shape (T, n, D)  n = (H/patch_size)*(W/patch_size)
-        """
-        gh, gw = H // self.patch_size, W // self.patch_size
-        assert gh <= self.gh_max and gw <= self.gw_max
-        n = gh * gw
-        device = self.spatial_emb.device
-
-        # 1) 计算空间索引，按 row-major 从大表里裁剪出前 n 个
-        rows = torch.arange(gh, device=device) * self.gw_max
-        cols = torch.arange(gw, device=device)
-        idx  = (rows.unsqueeze(1) + cols.unsqueeze(0)).view(-1)  # (n,)
-        pe_space = self.spatial_emb[0, idx, :]                  # (n, D)
-
-        # 2) 扩成 (T, n, D)
-        pe = pe_space.unsqueeze(0).expand(T, -1, -1)
-
-        # 3) 可选再加上时间编码
-        if self.use_temporal:
-            pe = pe + self.temporal_emb[:T]  # (T,1,D) -> broadcast to (T,n,D)
-
-        flat_pe = pe.view(-1, self.embed_dim)  # (T*n, D)
-        return flat_pe
+        return x
 
 class SpatialTemporalCoordMLP(nn.Module):
-    """
-    通过归一化的 (t, h, w) 坐标生成 Patch 级别时空位置编码。
-    
-    Args:
-        embed_dim (int): 输出的编码维度（如 2048）。
-        hidden_dim (int): MLP 隐藏层维度。
-        patch_size (int): Patch 的边长（如 28）。
-    """
+
     def __init__(self, embed_dim=2048, hidden_dim=512, patch_size=28):
         super().__init__()
         self.patch_size = patch_size
         self.embed_dim = embed_dim
-        # 两层 MLP：3 -> hidden_dim -> embed_dim
         self.mlp = nn.Sequential(
             nn.Linear(3, hidden_dim),
             nn.GELU(),
@@ -1622,31 +1551,20 @@ class SpatialTemporalCoordMLP(nn.Module):
         )
 
     def forward(self, T: int, H: int, W: int):
-        """
-        Args:
-            T (int): 帧数或图片数量。
-            H, W (int): 图像高、宽（需能被 patch_size 整除）。
-        
-        Returns:
-            Tensor: 形状 (T, num_patches, embed_dim) 的时空位置编码。
-        """
-        # 计算每帧的 Patch 网格数
+
         gh, gw = H // self.patch_size, W // self.patch_size
         device = next(self.parameters()).device
 
-        # 归一化坐标
         t_idx = torch.arange(T, device=device, dtype=torch.float32) / max(T-1, 1)
         i_idx = torch.arange(gh, device=device, dtype=torch.float32) / max(gh-1, 1)
         j_idx = torch.arange(gw, device=device, dtype=torch.float32) / max(gw-1, 1)
 
-        # 三维网格 (T, gh, gw)
         tt, ii, jj = torch.meshgrid(t_idx, i_idx, j_idx, indexing='ij')
-        # 拼成 (T, gh, gw, 3)
+
         coords = torch.stack([tt, ii, jj], dim=-1)
-        # 展平成 (T*gh*gw, 3)
+
         coords_flat = coords.view(-1, 3).to(dtype=torch.bfloat16)
 
-        # 过 MLP 得到 (T*gh*gw, embed_dim)
         pe_flat = self.mlp(coords_flat)
 
         return pe_flat
