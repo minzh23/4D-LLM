@@ -6,7 +6,6 @@ import torch
 from PIL import Image
 from tqdm import tqdm
 from src.qwen2_5_vl_custom import Qwen2_5_VLForConditionalGeneration
-# from transformers import Qwen2_5_VLForConditionalGeneration
 from src.training.data import image2tensor
 from transformers import AutoProcessor
 from qwen_vl_utils import process_vision_info

@@ -252,12 +252,6 @@ class SupervisedDataset(Dataset):
                 prompt_input_ids = inputs['input_ids']
                 all_pixel_values.append(inputs[pixel_key])
                 all_image_grid_thw.append(inputs[grid_key])
-                # for i, image_file in enumerate(image_files):
-                #     if not os.path.exists(image_file):
-                #         if not image_file.startswith("http"):
-                #             image_file = os.path.join(image_folder, image_file)
-                #     image_tensor, _ = image2tensor(cv2.imread(image_file), inputs[grid_key][j//2][1].item(), inputs[grid_key][j//2][2].item())
-                #     all_image_tensors.append(image_tensor)
             
             elif DEFAULT_VIDEO_TOKEN in user_input:
                 if "Qwen2.5" in self.model_id:

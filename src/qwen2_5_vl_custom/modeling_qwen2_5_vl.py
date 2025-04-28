@@ -1524,10 +1524,6 @@ class InterpolateMLPProjector(nn.Module):
         )
 
     def forward(self, x, height, width):
-        """
-        x: [B, N, C]  -> e.g., [1, 1764, 768]
-        height, width: 原图尺寸 (如 42, 42)
-        """
         B, N, C = x.shape
         assert N == height * width, "Token 数量和空间尺寸不匹配"
 
@@ -1668,40 +1664,11 @@ class Qwen2_5_VLForConditionalGeneration(Qwen2_5_VLPreTrainedModel, GenerationMi
         # self.projector = None
         self.projector = InterpolateMLPProjector()
         # self.position_embedding = None
-        # Pos Emb 1
-        # self.position_embedding = PatchPosEmbedGenerator(
-        #     max_image_size=(500, 500),
-        #     patch_size=2,
-        #     embed_dim=2048,
-        #     use_temporal=True,
-        #     max_frames=100
-        # )
-        # Pos Emb 2
         self.position_embedding = SpatialTemporalCoordMLP(
             embed_dim=2048,
             hidden_dim=512,
             patch_size=2,
         )
-        # Architecture 1(加法融合)
-        # self.fusion_projector = None
-        # self.fusion_projector = nn.Sequential(
-        #     nn.LayerNorm(2048),
-        #     nn.Linear(2048, 2048),
-        #     nn.GELU(),
-        #     nn.Linear(2048, 2048),
-        #     nn.LayerNorm(2048),
-        # )
-        # Architecture 2(sequence concat)
-        #
-        # Architecture 3(channel concat)
-        # self.fusion_projector = None
-        # self.fusion_projector = nn.Sequential(
-        #     nn.LayerNorm(4096),
-        #     nn.Linear(4096, 2048),
-        #     nn.GELU(),
-        #     nn.Linear(2048, 2048),
-        #     nn.LayerNorm(2048),
-        # )
         self.model = Qwen2_5_VLModel(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
@@ -2014,64 +1981,6 @@ class Qwen2_5_VLForConditionalGeneration(Qwen2_5_VLPreTrainedModel, GenerationMi
                 image_mask = mask_expanded.to(inputs_embeds.device)
                 fused_embeds = fused_embeds.to(inputs_embeds.device, inputs_embeds.dtype)
                 inputs_embeds = inputs_embeds.masked_scatter(image_mask, fused_embeds)
-
-                # Architecture 2
-                # batch_size, seq_length, _ = inputs_embeds.shape
-                # depth_embeds = self.projector(depth_embeds[0][0], image_grid_thw[0][1], image_grid_thw[0][2]).reshape(batch_size, -1, 2048)
-                # n_image_tokens = (input_ids == self.config.image_token_id).sum().item()
-                # n_image_features = image_embeds.shape[0]
-                # if n_image_tokens != n_image_features:
-                #     raise ValueError(
-                #         f"Image features and image tokens do not match: tokens: {n_image_tokens}, features {n_image_features}"
-                #     )
-
-                # mask = input_ids == self.config.image_token_id
-                # last_image_token_indices = mask.float().cumsum(dim=1).eq(mask.sum(dim=1, keepdim=True)).long() * mask.long()
-                # insert_indices = last_image_token_indices.argmax(dim=1) + 1  # 位置之后插入，所以 +1
-                # new_inputs = []
-                # new_input_ids = []
-                # new_attention_mask = []
-                # new_labels = []
-                # for i in range(inputs_embeds.size(0)):
-                #     idx = insert_indices[i]
-                #     before = inputs_embeds[i, :idx, :]
-                #     after = inputs_embeds[i, idx:, :]
-                #     inserted = depth_embeds[i]  # shape: [num_depth_tokens, embed_dim]
-                #     new_input = torch.cat([before, inserted, after], dim=0)
-                #     new_inputs.append(new_input)
-                #     num_insert = depth_embeds[i].shape[0]
-                #     inserted_ids = torch.full((num_insert,), self.config.image_token_id, dtype=torch.long, device=input_ids.device)
-                #     new_ids = torch.cat([input_ids[i, :idx], inserted_ids, input_ids[i, idx:]], dim=0)
-                #     new_input_ids.append(new_ids)
-                #     inserted_mask = torch.full((num_insert,), True, dtype=torch.bool, device=input_ids.device)
-                #     new_mask = torch.cat([attention_mask[i, :idx], inserted_mask, attention_mask[i, idx:]], dim=0)
-                #     new_attention_mask.append(new_mask)
-                #     inserted_label = torch.full((num_insert,), IGNORE_INDEX, dtype=torch.long, device=input_ids.device)
-                #     # new_label = torch.cat([labels[i, :idx], inserted_label, labels[i, idx:]], dim=0)
-                #     # new_labels.append(new_label)
-                # inputs_embeds = torch.stack(new_inputs, dim=0)
-                # input_ids = torch.stack(new_input_ids, dim=0)
-                # attention_mask = torch.stack(new_attention_mask, dim=0)
-                # # labels = torch.stack(new_labels, dim=0)
-
-                # Architecture 3
-                # batch_size, seq_length, _ = inputs_embeds.shape
-                # depth_embeds = self.projector(depth_embeds[0][0], image_grid_thw[0][1], image_grid_thw[0][2]).reshape(-1, 2048)
-                # fused_embeds = torch.concat((image_embeds, depth_embeds), dim=-1)
-                # fused_embeds = self.fusion_projector(fused_embeds)
-                # n_image_tokens = (input_ids == self.config.image_token_id).sum().item()
-                # n_image_features = fused_embeds.shape[0]
-                # if n_image_tokens != n_image_features:
-                #     raise ValueError(
-                #         f"Image features and image tokens do not match: tokens: {n_image_tokens}, features {n_image_features}"
-                #     )
-
-                # mask = input_ids == self.config.image_token_id
-                # mask_unsqueezed = mask.unsqueeze(-1)
-                # mask_expanded = mask_unsqueezed.expand_as(inputs_embeds)
-                # image_mask = mask_expanded.to(inputs_embeds.device)
-                # fused_embeds = fused_embeds.to(inputs_embeds.device, inputs_embeds.dtype)
-                # inputs_embeds = inputs_embeds.masked_scatter(image_mask, fused_embeds)
 
             if pixel_values_videos is not None:
                 pixel_values_videos = pixel_values_videos.type(self.visual.dtype)

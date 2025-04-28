@@ -6,7 +6,6 @@ import ast
 from transformers import AutoProcessor, BitsAndBytesConfig, Qwen2VLForConditionalGeneration, HfArgumentParser
 from src.qwen2_5_vl_custom import Qwen2_5_VLForConditionalGeneration
 from src.qwen2_5_vl_custom import Qwen2_5_VLProcessor
-# from transformers import Qwen2_5_VLForConditionalGeneration
 from training.trainer import QwenTrainer
 from training.data import make_supervised_data_module
 from training.params import DataArguments, ModelArguments, TrainingArguments
@@ -173,40 +172,11 @@ def train():
 
     model.projector = InterpolateMLPProjector()
 
-    # model.position_embedding = PatchPosEmbedGenerator(
-    #     max_image_size=(500, 500),
-    #     patch_size=2,
-    #     embed_dim=2048,
-    #     use_temporal=True,
-    #     max_frames=100
-    # )
-
     model.position_embedding = SpatialTemporalCoordMLP(
         embed_dim=2048,
         hidden_dim=512,
         patch_size=2,
     )
-    
-    # Architecture 1
-    # model.fusion_projector = nn.Sequential(
-    #         nn.LayerNorm(2048),
-    #         nn.Linear(2048, 2048),
-    #         nn.GELU(),
-    #         nn.Linear(2048, 2048),
-    #         nn.LayerNorm(2048),
-    #     )
-
-    # Architecture 2
-    #
-
-    # Architecture 3
-    # model.fusion_projector = nn.Sequential(
-    #         nn.LayerNorm(4096),
-    #         nn.Linear(4096, 2048),
-    #         nn.GELU(),
-    #         nn.Linear(2048, 2048),
-    #         nn.LayerNorm(2048),
-    #     )
 
     if training_args.bits in [4,8]:
         model.config.torch_dtype = (torch.float32 if training_args.fp16 else (torch.bfloat16 if training_args.bf16 else torch.float32))
