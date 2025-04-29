@@ -1577,16 +1577,16 @@ class Qwen2_5_VLForConditionalGeneration(Qwen2_5_VLPreTrainedModel, GenerationMi
     def __init__(self, config):
         super().__init__(config)
         self.visual = Qwen2_5_VisionTransformerPretrainedModel._from_config(config.vision_config)
-        # self.depth_encoder = None
-        self.depth_encoder = DINOv2(model_name='vitb')
-        # self.projector = None
-        self.projector = InterpolateMLPProjector()
-        # self.position_embedding = None
-        self.position_embedding = SpatialTemporalCoordMLP(
-            embed_dim=2048,
-            hidden_dim=512,
-            patch_size=2,
-        )
+        self.depth_encoder = None
+        # self.depth_encoder = DINOv2(model_name='vitb')
+        self.projector = None
+        # self.projector = InterpolateMLPProjector()
+        self.position_embedding = None
+        # self.position_embedding = SpatialTemporalCoordMLP(
+        #     embed_dim=2048,
+        #     hidden_dim=512,
+        #     patch_size=2,
+        # )
         self.model = Qwen2_5_VLModel(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)

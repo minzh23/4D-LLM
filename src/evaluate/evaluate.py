@@ -19,11 +19,11 @@ import wandb
 
 wandb.init(
     project="4d-llm-eval",  # 项目名称，替换为你自己的项目名
-    name="mlp_pos_emb",  # 本次 run 的名字
+    name="2_stage_training",  # 本次 run 的名字
 )
 
 # 1. 加载模型
-checkpoint_path = "output/mlp_pos_emb/checkpoint-1224"
+checkpoint_path = "output/stage2_frozen_none/checkpoint-1224"
 original_model_path = "Qwen/Qwen2.5-eVL-3B-Instruct"
 
 model = Qwen2_5_VLForConditionalGeneration.from_pretrained(

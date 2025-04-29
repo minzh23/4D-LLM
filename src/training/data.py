@@ -17,6 +17,8 @@ from src.qwen2_5_vl_custom.depth_anything_v2.util.transform import Resize, Norma
 from .params import DataArguments
 from .constants import *
 
+from decord import VideoReader, cpu
+
 def truncate_sequence(input_ids, labels, max_length, eos_token_id):
     if input_ids.size(0) > max_length:
         input_ids = input_ids[:max_length-1]
@@ -98,7 +100,7 @@ def get_video_info(video_path, min_pixels, max_pixels, width, height, fps):
 
     return video_input[0], video_kwargs
 
-def image2tensor(raw_image, input_size_h=37, input_size_w=37):        
+def image2tensor(raw_image, input_size_h=38, input_size_w=38):        
     transform = Compose([
         Resize(
             width=input_size_w * 14,
@@ -124,6 +126,25 @@ def image2tensor(raw_image, input_size_h=37, input_size_w=37):
     # image = image.to(DEVICE)
         
     return image, (h, w)
+
+def read_frame_decord(video_path: str, frame_index: int = 0):
+    vr = VideoReader(video_path, ctx=cpu(0))
+    if frame_index < 0 or frame_index >= len(vr):
+        raise IndexError("frame_index 超出范围")
+    # vr[frame_index] 返回一个 TVM NDArray，可调用 .asnumpy()
+    frame = vr[frame_index].asnumpy()    # RGB 格式
+    return frame
+
+def smart_scale(img):
+    min_val = float(img.min())
+    max_val = float(img.max())
+
+    if 0.0 <= min_val and max_val <= 1.0:
+        img = img * 255.0
+        img = img.clamp(0, 255)
+        return img
+    else:
+        return img
 
 class SupervisedDataset(Dataset):
     """Dataset for supervised fine-tuning."""
@@ -185,7 +206,8 @@ class SupervisedDataset(Dataset):
                     if not image_file.startswith("http"):
                         image_file = os.path.join(image_folder, image_file)
                 image_tensor, _ = image2tensor(cv2.imread(image_file))
-                images.append(get_image_info(image_file, self.image_min_pixel, self.image_max_pixel, image_tensor.shape[3], image_tensor.shape[2]))
+                image = get_image_info(image_file, self.image_min_pixel, self.image_max_pixel, image_tensor.shape[3], image_tensor.shape[2])
+                images.append(image)
                 image_tensor_flat = image_tensor.permute(1, 0, 2, 3).contiguous().view(image_tensor.shape[1], -1)
                 all_image_tensors.append(image_tensor_flat)
 
@@ -207,14 +229,18 @@ class SupervisedDataset(Dataset):
                 if not os.path.exists(video_file):
                     if not video_file.startswith("http"):
                         video_file = os.path.join(video_folder, video_file)
-                video_input, video_kwargs = get_video_info(video_file, self.video_min_pixel, self.video_max_pixel, self.video_resized_w, self.video_resized_h, self.data_args.fps)
+                example_frame = read_frame_decord(video_file, 0)
+                example_tensor, _ = image2tensor(example_frame)
+                resized_h, resized_w = example_tensor.shape[:2]
+                video_input, video_kwargs = get_video_info(video_file, self.video_min_pixel, self.video_max_pixel, resized_w, resized_h, self.data_args.fps)
                 for raw_image in video_input:
                     np_img = (raw_image.permute(1,2,0).cpu().numpy()).astype(np.uint8)
                     np_img = cv2.cvtColor(np_img, cv2.COLOR_RGB2BGR)
-                    image_tensor, _ = image2tensor(np_img, input_size_h=38, input_size_w=38)
+                    image_tensor, _ = image2tensor(np_img)
                     image_tensor_flat = image_tensor.permute(1, 0, 2, 3).contiguous().view(image_tensor.shape[1], -1)
                     all_image_tensors.append(image_tensor_flat)
 
+                video_input = smart_scale(video_input)
                 videos.append(video_input)
 
         else:

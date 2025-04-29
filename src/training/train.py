@@ -14,7 +14,7 @@ import pathlib
 from liger_kernel.transformers import apply_liger_kernel_to_qwen2_vl, apply_liger_kernel_to_qwen2_5_vl
 from monkey_patch_forward import replace_qwen2_5_with_mixed_modality_forward, replace_qwen_2_with_mixed_modality_forward
 from src.qwen2_5_vl_custom.depth_anything_v2.dinov2 import DINOv2
-from src.qwen2_5_vl_custom.modeling_qwen2_5_vl import InterpolateMLPProjector, PatchPosEmbedGenerator, SpatialTemporalCoordMLP
+from src.qwen2_5_vl_custom.modeling_qwen2_5_vl import InterpolateMLPProjector, SpatialTemporalCoordMLP
 import torch.nn as nn
 import wandb
 
@@ -85,11 +85,16 @@ def train():
     
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
-    wandb.init(
-        project=training_args.wandb_project,
-        name=training_args.wandb_run_name,
-        config={k: v for k, v in vars(training_args).items() if is_json_serializable(v)}  # 可记录所有训练参数
-    )
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+
+    if local_rank == 0:
+        wandb.init(
+            project=training_args.wandb_project,
+            name=training_args.wandb_run_name,
+            config={k: v for k, v in vars(training_args).items() if is_json_serializable(v)}
+        )
+    else:
+        os.environ["WANDB_MODE"] = "disabled"
 
     use_liger = training_args.use_liger
     if "Qwen2.5" in model_args.model_id:
@@ -146,6 +151,7 @@ def train():
 
     if "Qwen2.5" in model_args.model_id:
         model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            # "output/stage1_only_projector_posemb",
             model_args.model_id,
             torch_dtype=compute_dtype,
             attn_implementation="flash_attention_2" if not training_args.disable_flash_attn2 else "sdpa", 
@@ -263,12 +269,16 @@ def train():
     else:
         safe_save_model_for_hf_trainer(trainer, output_dir=training_args.output_dir)
     
-    # wandb.finish()
+    wandb.finish()
 
 if __name__ == "__main__":
-    import debugpy
-    debugpy.listen(("127.0.0.1", 5678))
-    print("Waiting for debugger to attach...")
-    debugpy.wait_for_client()
-    print("Debugger attached, starting execution...")
+    # import debugpy
+    # debugpy.listen(("127.0.0.1", 5678))
+    # print("Waiting for debugger to attach...")
+    # debugpy.wait_for_client()
+    # print("Debugger attached, starting execution...")
+    
+    # import torch.multiprocessing as mp
+    # mp.set_sharing_strategy('file_system')
+
     train()
