@@ -30,6 +30,10 @@ from transformers.image_utils import ImageInput, VideoInput
 from transformers.processing_utils import ProcessingKwargs, ProcessorMixin, Unpack, VideosKwargs
 from transformers.tokenization_utils_base import PreTokenizedInput, TextInput
 
+import numpy as np
+import torch
+from src.training.data import image2tensor
+
 
 class Qwen2_5_VLVideosProcessorKwargs(VideosKwargs, total=False):
     fps: Union[List[float], float]
@@ -119,9 +123,17 @@ class Qwen2_5_VLProcessor(ProcessorMixin):
             tokenizer_init_kwargs=self.tokenizer.init_kwargs,
             **kwargs,
         )
+
+        all_image_tensors = []
         if images is not None:
             image_inputs = self.image_processor(images=images, videos=None, **output_kwargs["images_kwargs"])
             image_grid_thw = image_inputs["image_grid_thw"]
+            for image in images:
+                image = np.array(image)[:, :, ::-1]
+                image_tensor, _ = image2tensor(image)
+                image_tensor_flat = image_tensor.permute(1, 0, 2, 3).contiguous().view(image_tensor.shape[1], -1)
+                all_image_tensors.append(image_tensor_flat)
+            image_inputs["depth_values"] = torch.cat(all_image_tensors, dim=1)
         else:
             image_inputs = {}
             image_grid_thw = None

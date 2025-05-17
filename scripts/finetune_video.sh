@@ -4,34 +4,37 @@
 # MODEL_NAME="Qwen/Qwen2-VL-7B-Instruct"
 # MODEL_NAME="Qwen/Qwen2-VL-2B-Instruct"
 MODEL_NAME="Qwen/Qwen2.5-VL-3B-Instruct"
-# MODEL_NAME="Qwen/Qwen2.5-VL-7B-Instruct"
+# MODEL_NAME="../Video-R1/Qwen2.5-VL-7B-Instruct-local"
 
 export PYTHONPATH=src:$PYTHONPATH
 
-GLOBAL_BATCH_SIZE=128
-BATCH_PER_DEVICE=4
-NUM_DEVICES=8
+GLOBAL_BATCH_SIZE=1
+BATCH_PER_DEVICE=1
+NUM_DEVICES=1
 GRAD_ACCUM_STEPS=$((GLOBAL_BATCH_SIZE / (BATCH_PER_DEVICE * NUM_DEVICES)))
 
 # If your dataset is mixed with images and videos, you need to use zero2.
 deepspeed src/training/train.py \
     --use_liger True \
-    --deepspeed scripts/zero3_offload.json \
+    --deepspeed scripts/zero2.json \
     --model_id $MODEL_NAME \
-    --data_path /path/to/your/training/data.json \
-    --image_folder /path/to/your/image/folder \
+    --data_path /cephfs/shared/yicheng/4D-LLM/Video-R1/Video-R1-COT-Final.json \
+    --image_folder /cephfs/shared/yicheng/4D-LLM/Video-R1 \
     --remove_unused_columns False \
-    --freeze_vision_tower False \
-    --freeze_llm False \
-    --tune_merger True \
+    --freeze_vision_tower True \
+    --freeze_llm True \
+    --freeze_depth_encoder True \
+    --tune_merger False \
     --bf16 True \
     --fp16 False \
     --disable_flash_attn2 False \
-    --output_dir output/test_train \
+    --output_dir output/sft_stage1 \
     --num_train_epochs 1 \
     --per_device_train_batch_size $BATCH_PER_DEVICE \
     --gradient_accumulation_steps $GRAD_ACCUM_STEPS \
     --video_max_pixels $((360 * 420)) \
+    --image_min_pixels $((512 * 28 * 28)) \
+    --image_max_pixels $((1280 * 28 * 28)) \
     --fps 1.0 \
     --learning_rate 1e-5 \
     --merger_lr 1e-5 \
@@ -45,6 +48,9 @@ deepspeed src/training/train.py \
     --report_to tensorboard \
     --lazy_preprocess True \
     --save_strategy "steps" \
-    --save_steps 1 \
+    --save_steps 200 \
     --save_total_limit 10 \
-    --dataloader_num_workers 4
+    --dataloader_num_workers 4 \
+    --wandb_project 4d-llm \
+    --wandb_run_name sft_stage1 \
+    --report_to wandb \

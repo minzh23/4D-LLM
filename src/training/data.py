@@ -100,7 +100,7 @@ def get_video_info(video_path, min_pixels, max_pixels, width, height, fps):
 
     return video_input[0], video_kwargs
 
-def image2tensor(raw_image, input_size_h=38, input_size_w=38):        
+def image2tensor(raw_image, image_file=None, input_size_h=38, input_size_w=38):        
     transform = Compose([
         Resize(
             width=input_size_w * 14,
@@ -114,7 +114,8 @@ def image2tensor(raw_image, input_size_h=38, input_size_w=38):
         NormalizeImage(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         PrepareForNet(),
     ])
-        
+    if raw_image is None:
+        raise ValueError(f"Image not found: {image_file}")
     h, w = raw_image.shape[:2]
         
     image = cv2.cvtColor(raw_image, cv2.COLOR_BGR2RGB) / 255.0
@@ -182,9 +183,28 @@ class SupervisedDataset(Dataset):
         return len(self.list_data_dict)
 
     def __getitem__(self, i) -> Dict[str, torch.Tensor]:
+
+        QUESTION_TEMPLATE = (
+            "{Question}\n"
+            "Please think about this question as if you were a human pondering deeply. "
+            "Engage in an internal dialogue using expressions such as 'let me think', 'wait', 'Hmm', 'oh, I see', 'let's break it down', etc, or other natural language thought expressions "
+            "It's encouraged to include self-reflection or verification in the reasoning process. "
+            "Provide your detailed reasoning between the <think> </think> tags, and then give your final answer between the <answer> </answer> tags."
+        )
+
+        TYPE_TEMPLATE = {
+            "multiple choice": " Please provide only the single option letter (e.g., A, B, C, D, etc.) within the <answer> </answer> tags.",
+            "numerical": " Please provide the numerical value (e.g., 42 or 3.14) within the <answer> </answer> tags.",
+            "OCR": " Please transcribe text from the image/video clearly and provide your text answer within the <answer> </answer> tags.",
+            "free-form": " Please provide your text answer within the <answer> </answer> tags.",
+            "regression": " Please provide the numerical value (e.g., 42 or 3.14) within the <answer> </answer> tags."
+        }
+
         sources = self.list_data_dict[i]
 
         is_video = False
+
+        problem_type = sources.get("problem_type", None)
 
         processor = self.processor
         if "image" in sources:
@@ -205,11 +225,14 @@ class SupervisedDataset(Dataset):
                 if not os.path.exists(image_file):
                     if not image_file.startswith("http"):
                         image_file = os.path.join(image_folder, image_file)
-                image_tensor, _ = image2tensor(cv2.imread(image_file))
-                image = get_image_info(image_file, self.image_min_pixel, self.image_max_pixel, image_tensor.shape[3], image_tensor.shape[2])
+                # img = Image.open(image_file).convert("RGB")
+                # img = np.array(img)[:, :, ::-1]
+                # image_tensor, _ = image2tensor(img)
+                # image = get_image_info(image_file, self.image_min_pixel, self.image_max_pixel, image_tensor.shape[3], image_tensor.shape[2])
+                image = get_image_info(image_file, self.image_min_pixel, self.image_max_pixel)
                 images.append(image)
-                image_tensor_flat = image_tensor.permute(1, 0, 2, 3).contiguous().view(image_tensor.shape[1], -1)
-                all_image_tensors.append(image_tensor_flat)
+                # image_tensor_flat = image_tensor.permute(1, 0, 2, 3).contiguous().view(image_tensor.shape[1], -1)
+                # all_image_tensors.append(image_tensor_flat)
 
         elif "video" in sources:
             is_video = True
@@ -229,16 +252,17 @@ class SupervisedDataset(Dataset):
                 if not os.path.exists(video_file):
                     if not video_file.startswith("http"):
                         video_file = os.path.join(video_folder, video_file)
-                example_frame = read_frame_decord(video_file, 0)
-                example_tensor, _ = image2tensor(example_frame)
-                resized_h, resized_w = example_tensor.shape[:2]
-                video_input, video_kwargs = get_video_info(video_file, self.video_min_pixel, self.video_max_pixel, resized_w, resized_h, self.data_args.fps)
-                for raw_image in video_input:
-                    np_img = (raw_image.permute(1,2,0).cpu().numpy()).astype(np.uint8)
-                    np_img = cv2.cvtColor(np_img, cv2.COLOR_RGB2BGR)
-                    image_tensor, _ = image2tensor(np_img)
-                    image_tensor_flat = image_tensor.permute(1, 0, 2, 3).contiguous().view(image_tensor.shape[1], -1)
-                    all_image_tensors.append(image_tensor_flat)
+                # example_frame = read_frame_decord(video_file, 0)
+                # example_tensor, _ = image2tensor(example_frame)
+                # resized_h, resized_w = example_tensor.shape[:2]
+                # video_input, video_kwargs = get_video_info(video_file, self.video_min_pixel, self.video_max_pixel, resized_w, resized_h, self.data_args.fps)
+                video_input, video_kwargs = get_video_info(video_file, self.video_min_pixel, self.video_max_pixel, self.fps)
+                # for raw_image in video_input:
+                #     np_img = (raw_image.permute(1,2,0).cpu().numpy()).astype(np.uint8)
+                #     np_img = cv2.cvtColor(np_img, cv2.COLOR_RGB2BGR)
+                #     image_tensor, _ = image2tensor(np_img)
+                #     image_tensor_flat = image_tensor.permute(1, 0, 2, 3).contiguous().view(image_tensor.shape[1], -1)
+                #     all_image_tensors.append(image_tensor_flat)
 
                 video_input = smart_scale(video_input)
                 videos.append(video_input)
@@ -270,7 +294,7 @@ class SupervisedDataset(Dataset):
             user_input = sources[j]
             gpt_response = sources[j + 1]
 
-            user_input = f"{DEFAULT_IM_START_TOKEN}{user_input['role']}\n{user_input['content']}{DEFAULT_IM_END_TOKEN}\n{DEFAULT_IM_START_TOKEN}{gpt_response['role']}\n"
+            user_input = f"{DEFAULT_IM_START_TOKEN}{user_input['role']}\n{QUESTION_TEMPLATE.format(Question=user_input['content']) + TYPE_TEMPLATE[problem_type]}{DEFAULT_IM_END_TOKEN}\n{DEFAULT_IM_START_TOKEN}{gpt_response['role']}\n"
             gpt_response = f"{gpt_response['content']}{DEFAULT_IM_END_TOKEN}\n"
             
             if DEFAULT_IMAGE_TOKEN in user_input:

@@ -36,6 +36,9 @@ OmniSpatial.zip
 .vscode/
 checkpoints/
 wandb/
+test.py
+log/
+filtered_llava_video.json
 
 # PyInstaller
 #  Usually these files are written by a python script from a template

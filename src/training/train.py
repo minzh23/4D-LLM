@@ -151,7 +151,7 @@ def train():
 
     if "Qwen2.5" in model_args.model_id:
         model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            # "output/stage1_only_projector_posemb",
+            # "output/video-r1_stage1/checkpoint-6363",
             model_args.model_id,
             torch_dtype=compute_dtype,
             attn_implementation="flash_attention_2" if not training_args.disable_flash_attn2 else "sdpa", 
@@ -183,6 +183,8 @@ def train():
         hidden_dim=512,
         patch_size=2,
     )
+
+    model.to(training_args.device)
 
     if training_args.bits in [4,8]:
         model.config.torch_dtype = (torch.float32 if training_args.fp16 else (torch.bfloat16 if training_args.bf16 else torch.float32))
@@ -244,10 +246,10 @@ def train():
         **data_module
     )
 
-    if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
-        trainer.train(resume_from_checkpoint=True)
-    else:
-        trainer.train()
+    # if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
+    #     trainer.train(resume_from_checkpoint=True)
+    # else:
+    trainer.train()
 
     trainer.save_state()
 
@@ -280,5 +282,7 @@ if __name__ == "__main__":
     
     # import torch.multiprocessing as mp
     # mp.set_sharing_strategy('file_system')
-
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    os.environ['NCCL_TIMEOUT'] = '1200000'  # 设置为20分钟
+    os.environ['NCCL_BLOCKING_WAIT'] = '1'  # 启用阻塞等待
     train()
