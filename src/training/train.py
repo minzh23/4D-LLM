@@ -151,8 +151,8 @@ def train():
 
     if "Qwen2.5" in model_args.model_id:
         model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            # "output/video-r1_stage1/checkpoint-6363",
-            model_args.model_id,
+            "output/sft_stage1/checkpoint-5175",
+            # model_args.model_id,
             torch_dtype=compute_dtype,
             attn_implementation="flash_attention_2" if not training_args.disable_flash_attn2 else "sdpa", 
             # ignore_mismatched_sizes=True,
@@ -171,18 +171,18 @@ def train():
     configure_llm(model_to_configure, training_args)
     configure_vision_tower(model_to_configure, training_args, compute_dtype, training_args.device)
 
-    depth_encoder_state_dict = torch.load('src/qwen2_5_vl_custom/depth_anything_v2/checkpoints/dinov2_only_vitb.pth', map_location='cpu', weights_only=True)
-    model.depth_encoder = DINOv2(model_name='vitb')
-    model.depth_encoder.load_state_dict(depth_encoder_state_dict)
+    # depth_encoder_state_dict = torch.load('src/qwen2_5_vl_custom/depth_anything_v2/checkpoints/dinov2_only_vitb.pth', map_location='cpu', weights_only=True)
+    # model.depth_encoder = DINOv2(model_name='vitb')
+    # model.depth_encoder.load_state_dict(depth_encoder_state_dict)
     configure_depth_encoder(model_to_configure, training_args, compute_dtype, training_args.device)
 
-    model.projector = InterpolateMLPProjector()
+    # model.projector = InterpolateMLPProjector()
 
-    model.position_embedding = SpatialTemporalCoordMLP(
-        embed_dim=2048,
-        hidden_dim=512,
-        patch_size=2,
-    )
+    # model.position_embedding = SpatialTemporalCoordMLP(
+    #     embed_dim=2048,
+    #     hidden_dim=512,
+    #     patch_size=2,
+    # )
 
     model.to(training_args.device)
 
@@ -246,10 +246,10 @@ def train():
         **data_module
     )
 
-    # if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
-    #     trainer.train(resume_from_checkpoint=True)
-    # else:
-    trainer.train()
+    if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
+        trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
+    else:
+        trainer.train()
 
     trainer.save_state()
 

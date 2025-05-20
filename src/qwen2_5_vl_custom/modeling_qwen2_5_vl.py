@@ -1858,43 +1858,43 @@ class Qwen2_5_VLForConditionalGeneration(Qwen2_5_VLPreTrainedModel, GenerationMi
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        # if depth_values is not None:
-        #     num_generations = depth_values.shape[0] // 3
+        if depth_values is not None:
+            num_generations = depth_values.shape[0] // 3
         
-        #     if num_generations != 1:
-        #         depth_values = depth_values.view(3, num_generations, -1)
-        #         depth_values = depth_values.view(3, -1)
-        #         depth_values = depth_values.to(torch.bfloat16)
+            if num_generations != 1:
+                depth_values = depth_values.view(3, num_generations, -1)
+                depth_values = depth_values.view(3, -1)
+                depth_values = depth_values.to(torch.bfloat16)
 
         if inputs_embeds is None:
             inputs_embeds = self.model.embed_tokens(input_ids)
             if pixel_values is not None:
                 pixel_values = pixel_values.type(self.visual.dtype)
                 image_embeds = self.visual(pixel_values, grid_thw=image_grid_thw)
-                # col = 0
-                # depth_images = []
-                # for (t, h, w) in image_grid_thw:
-                #     num = t * h * w * 14 * 14
-                #     seg = depth_values[:, col : col + num]
-                #     depth_image = seg.view(3, t, h * 14, w * 14).permute(1, 0, 2, 3).contiguous()
-                #     depth_images.append(depth_image) 
-                #     col += num
-                # depth_embeds = []
-                # for i in range(len(depth_images)):
-                #     depth_embed = self.depth_encoder.get_intermediate_layers(depth_images[i], [8], return_class_token=True)
-                #     depth_embed = self.projector(depth_embed[0][0], image_grid_thw[i][1], image_grid_thw[i][2]).reshape(-1, 2048)
-                #     depth_embeds.append(depth_embed)
-                # depth_embeds = torch.cat(depth_embeds, dim=0)
+                col = 0
+                depth_images = []
+                for (t, h, w) in image_grid_thw:
+                    num = t * h * w * 14 * 14
+                    seg = depth_values[:, col : col + num]
+                    depth_image = seg.view(3, t, h * 14, w * 14).permute(1, 0, 2, 3).contiguous()
+                    depth_images.append(depth_image) 
+                    col += num
+                depth_embeds = []
+                for i in range(len(depth_images)):
+                    depth_embed = self.depth_encoder.get_intermediate_layers(depth_images[i], [8], return_class_token=True)
+                    depth_embed = self.projector(depth_embed[0][0], image_grid_thw[i][1], image_grid_thw[i][2]).reshape(-1, 2048)
+                    depth_embeds.append(depth_embed)
+                depth_embeds = torch.cat(depth_embeds, dim=0)
 
-                # pos_embeds = []
-                # for i in range(len(depth_images)):
-                #     t, h, w = image_grid_thw[i]
-                #     pos_embed = self.position_embedding(t, h, w)
-                #     pos_embeds.append(pos_embed)
-                # pos_embeds = torch.cat(pos_embeds, dim=0)
+                pos_embeds = []
+                for i in range(len(depth_images)):
+                    t, h, w = image_grid_thw[i]
+                    pos_embed = self.position_embedding(t, h, w)
+                    pos_embeds.append(pos_embed)
+                pos_embeds = torch.cat(pos_embeds, dim=0)
                 # Architecture 1
-                # fused_embeds = image_embeds + depth_embeds + pos_embeds
-                fused_embeds = image_embeds
+                fused_embeds = image_embeds + depth_embeds + pos_embeds
+                # fused_embeds = image_embeds
                 n_image_tokens = (input_ids == self.config.image_token_id).sum().item()
                 n_image_features = fused_embeds.shape[0]
                 if n_image_tokens != n_image_features:
@@ -1912,31 +1912,31 @@ class Qwen2_5_VLForConditionalGeneration(Qwen2_5_VLPreTrainedModel, GenerationMi
             if pixel_values_videos is not None:
                 pixel_values_videos = pixel_values_videos.type(self.visual.dtype)
                 video_embeds = self.visual(pixel_values_videos, grid_thw=video_grid_thw)
-                # col = 0
-                # depth_images = []
-                # for (t, h, w) in video_grid_thw:
-                #     num = 2 * t * h * w * 14 * 14
-                #     seg = depth_values[:, col : col + num]
-                #     depth_image = seg.view(3, t * 2, h * 14, w * 14).permute(1, 0, 2, 3).contiguous()
-                #     depth_images.append(depth_image) 
-                #     col += num
-                # depth_embeds = []
-                # for i in range(len(depth_images)):
-                #     depth_embed = self.depth_encoder.get_intermediate_layers(depth_images[i], [8], return_class_token=True)
-                #     depth_embed = (depth_embed[0][0][0::2] + depth_embed[0][0][1::2]) / 2
-                #     depth_embed = self.projector(depth_embed, video_grid_thw[i][1], video_grid_thw[i][2]).reshape(-1, 2048)
-                #     depth_embeds.append(depth_embed)
-                # depth_embeds = torch.cat(depth_embeds, dim=0)
+                col = 0
+                depth_images = []
+                for (t, h, w) in video_grid_thw:
+                    num = 2 * t * h * w * 14 * 14
+                    seg = depth_values[:, col : col + num]
+                    depth_image = seg.view(3, t * 2, h * 14, w * 14).permute(1, 0, 2, 3).contiguous()
+                    depth_images.append(depth_image) 
+                    col += num
+                depth_embeds = []
+                for i in range(len(depth_images)):
+                    depth_embed = self.depth_encoder.get_intermediate_layers(depth_images[i], [8], return_class_token=True)
+                    depth_embed = (depth_embed[0][0][0::2] + depth_embed[0][0][1::2]) / 2
+                    depth_embed = self.projector(depth_embed, video_grid_thw[i][1], video_grid_thw[i][2]).reshape(-1, 2048)
+                    depth_embeds.append(depth_embed)
+                depth_embeds = torch.cat(depth_embeds, dim=0)
 
-                # pos_embeds = []
-                # for i in range(len(depth_images)):
-                #     t, h, w = video_grid_thw[i]
-                #     pos_embed = self.position_embedding(t, h, w)
-                #     pos_embeds.append(pos_embed)
-                # pos_embeds = torch.cat(pos_embeds, dim=0)
+                pos_embeds = []
+                for i in range(len(depth_images)):
+                    t, h, w = video_grid_thw[i]
+                    pos_embed = self.position_embedding(t, h, w)
+                    pos_embeds.append(pos_embed)
+                pos_embeds = torch.cat(pos_embeds, dim=0)
                 
-                # fused_embeds = video_embeds + depth_embeds + pos_embeds
-                fused_embeds = video_embeds
+                fused_embeds = video_embeds + depth_embeds + pos_embeds
+                # fused_embeds = video_embeds
                 n_video_tokens = (input_ids == self.config.video_token_id).sum().item()
                 n_video_features = video_embeds.shape[0]
                 if n_video_tokens != n_video_features:
@@ -1963,8 +1963,8 @@ class Qwen2_5_VLForConditionalGeneration(Qwen2_5_VLPreTrainedModel, GenerationMi
                 or self.rope_deltas is None
                 or (past_key_values is None or past_key_values.get_seq_length() == 0)
             ):
-                # if attention_mask is not None:
-                    # attention_mask = attention_mask[:, : input_ids.shape[1]]
+                if attention_mask is not None:
+                    attention_mask = attention_mask[:, : input_ids.shape[1]]
                 position_ids, rope_deltas = self.get_rope_index(
                     input_ids,
                     image_grid_thw,
@@ -2101,6 +2101,8 @@ class Qwen2_5_VLForConditionalGeneration(Qwen2_5_VLPreTrainedModel, GenerationMi
         video_mask = input_ids == video_token_id
         image_nums = torch.sum(vision_first_mask & image_mask, dim=1)
         video_nums = torch.sum(vision_first_mask & video_mask, dim=1)
+        # if video_nums == torch.tensor([0]).to(video_nums.device) and image_nums == torch.tensor([0]).to(image_nums.device):
+        #     video_nums = torch.tensor([1]).to(video_nums.device)   
 
         return image_nums, video_nums
 

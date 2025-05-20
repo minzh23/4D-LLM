@@ -6,7 +6,7 @@ export LOG_PATH="./debug_log_2b.txt"
 
 # Qwen/Qwen2.5-VL-7B-Instruct
 
-CUDA_VISIBLE_DEVICES=0 torchrun --nproc_per_node="1" \
+CUDA_VISIBLE_DEVICES=0,1,2,3,4 torchrun --nproc_per_node="4" \
     --nnodes="1" \
     --node_rank="0" \
     --master_addr="127.0.0.1" \
@@ -36,4 +36,4 @@ CUDA_VISIBLE_DEVICES=0 torchrun --nproc_per_node="1" \
     --beta 0.04 \
     --max_grad_norm 5 \
     --save_only_model false \
-    --num_generations 8  # number of outputs G in grpo, reduce it would lead to faster training and smaller memory cost but higher variance  
+    --num_generations 4  # number of outputs G in grpo, reduce it would lead to faster training and smaller memory cost but higher variance  

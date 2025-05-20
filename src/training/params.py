@@ -64,6 +64,10 @@ class TrainingArguments(TrainingArguments):
         default=None,
         metadata={"help": "WandB run name (default to auto-generated if None)"}
     )
+    resume_from_checkpoint: Optional[str] = field(
+        default=None,
+        metadata={"help": "Path to a previous checkpoint to resume training from."}
+    )
 
 
 
