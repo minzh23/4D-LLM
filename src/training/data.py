@@ -8,7 +8,8 @@ import torch
 import transformers
 import ujson as json
 from torch.utils.data import Dataset
-from qwen_vl_utils import process_vision_info
+from src.qwen_vl_utils_custom.vision_process import process_vision_info
+# from qwen_vl_utils import process_vision_info
 from PIL import Image
 import re
 from torchvision.transforms import Compose
@@ -100,11 +101,11 @@ def get_video_info(video_path, min_pixels, max_pixels, width, height, fps):
 
     return video_input[0], video_kwargs
 
-def image2tensor(raw_image, image_file=None, input_size_h=38, input_size_w=38):        
+def image2tensor(raw_image, image_file=None, input_size_h=532, input_size_w=532):        
     transform = Compose([
         Resize(
-            width=input_size_w * 14,
-            height=input_size_h * 14,
+            width=input_size_w,
+            height=input_size_h,
             resize_target=False,
             keep_aspect_ratio=True,
             ensure_multiple_of=28,
@@ -225,14 +226,15 @@ class SupervisedDataset(Dataset):
                 if not os.path.exists(image_file):
                     if not image_file.startswith("http"):
                         image_file = os.path.join(image_folder, image_file)
-                # img = Image.open(image_file).convert("RGB")
-                # img = np.array(img)[:, :, ::-1]
+                img = Image.open(image_file).convert("RGB")
+                img = np.array(img)[:, :, ::-1]
                 # image_tensor, _ = image2tensor(img)
                 # image = get_image_info(image_file, self.image_min_pixel, self.image_max_pixel, image_tensor.shape[3], image_tensor.shape[2])
-                image = get_image_info(image_file, self.image_min_pixel, self.image_max_pixel)
+                image = get_image_info(image_file, self.image_min_pixel, self.image_max_pixel, None, None)
                 images.append(image)
-                # image_tensor_flat = image_tensor.permute(1, 0, 2, 3).contiguous().view(image_tensor.shape[1], -1)
-                # all_image_tensors.append(image_tensor_flat)
+                image_tensor, _ = image2tensor(img, None, image.size[0], image.size[1])
+                image_tensor_flat = image_tensor.permute(1, 0, 2, 3).contiguous().view(image_tensor.shape[1], -1)
+                all_image_tensors.append(image_tensor_flat)
 
         elif "video" in sources:
             is_video = True
@@ -254,15 +256,15 @@ class SupervisedDataset(Dataset):
                         video_file = os.path.join(video_folder, video_file)
                 # example_frame = read_frame_decord(video_file, 0)
                 # example_tensor, _ = image2tensor(example_frame)
-                # resized_h, resized_w = example_tensor.shape[:2]
+                # resized_h, resized_w = example_tensor.shape[2:]
+                video_input, video_kwargs = get_video_info(video_file, self.video_min_pixel, self.video_max_pixel, None, None, self.data_args.fps)
                 # video_input, video_kwargs = get_video_info(video_file, self.video_min_pixel, self.video_max_pixel, resized_w, resized_h, self.data_args.fps)
-                video_input, video_kwargs = get_video_info(video_file, self.video_min_pixel, self.video_max_pixel, self.fps)
-                # for raw_image in video_input:
-                #     np_img = (raw_image.permute(1,2,0).cpu().numpy()).astype(np.uint8)
-                #     np_img = cv2.cvtColor(np_img, cv2.COLOR_RGB2BGR)
-                #     image_tensor, _ = image2tensor(np_img)
-                #     image_tensor_flat = image_tensor.permute(1, 0, 2, 3).contiguous().view(image_tensor.shape[1], -1)
-                #     all_image_tensors.append(image_tensor_flat)
+                for raw_image in video_input:
+                    np_img = (raw_image.permute(1,2,0).cpu().numpy()).astype(np.uint8)
+                    np_img = cv2.cvtColor(np_img, cv2.COLOR_RGB2BGR)
+                    image_tensor, _ = image2tensor(np_img, None, video_input.shape[2], video_input.shape[3])
+                    image_tensor_flat = image_tensor.permute(1, 0, 2, 3).contiguous().view(image_tensor.shape[1], -1)
+                    all_image_tensors.append(image_tensor_flat)
 
                 video_input = smart_scale(video_input)
                 videos.append(video_input)
@@ -302,6 +304,7 @@ class SupervisedDataset(Dataset):
                 prompt_input_ids = inputs['input_ids']
                 all_pixel_values.append(inputs[pixel_key])
                 all_image_grid_thw.append(inputs[grid_key])
+                # all_image_tensors.append(inputs["depth_values"])
             
             elif DEFAULT_VIDEO_TOKEN in user_input:
                 if "Qwen2.5" in self.model_id:
@@ -312,6 +315,7 @@ class SupervisedDataset(Dataset):
                 prompt_input_ids = inputs['input_ids']
                 all_pixel_values.append(inputs[pixel_key])
                 all_image_grid_thw.append(inputs[grid_key])
+                # all_image_tensors.append(inputs["depth_values"])
 
             else:
                 prompt_input_ids = processor.tokenizer(user_input, add_special_tokens=False, padding=False, return_tensors='pt')['input_ids']

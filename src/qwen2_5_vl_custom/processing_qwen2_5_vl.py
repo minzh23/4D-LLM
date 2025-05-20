@@ -31,6 +31,7 @@ from transformers.processing_utils import ProcessingKwargs, ProcessorMixin, Unpa
 from transformers.tokenization_utils_base import PreTokenizedInput, TextInput
 
 import numpy as np
+import cv2
 import torch
 from src.training.data import image2tensor
 
@@ -124,16 +125,16 @@ class Qwen2_5_VLProcessor(ProcessorMixin):
             **kwargs,
         )
 
-        all_image_tensors = []
+        # all_image_tensors = []
         if images is not None:
             image_inputs = self.image_processor(images=images, videos=None, **output_kwargs["images_kwargs"])
             image_grid_thw = image_inputs["image_grid_thw"]
-            for image in images:
-                image = np.array(image)[:, :, ::-1]
-                image_tensor, _ = image2tensor(image)
-                image_tensor_flat = image_tensor.permute(1, 0, 2, 3).contiguous().view(image_tensor.shape[1], -1)
-                all_image_tensors.append(image_tensor_flat)
-            image_inputs["depth_values"] = torch.cat(all_image_tensors, dim=1)
+            # for image in images:
+            #     image = np.array(image)[:, :, ::-1]
+            #     image_tensor, _ = image2tensor(image, image_file=None, input_size_h=image.shape[0], input_size_w=image.shape[1])
+            #     image_tensor_flat = image_tensor.permute(1, 0, 2, 3).contiguous().view(image_tensor.shape[1], -1)
+            #     all_image_tensors.append(image_tensor_flat)
+            # image_inputs["depth_values"] = torch.cat(all_image_tensors, dim=1)
         else:
             image_inputs = {}
             image_grid_thw = None
@@ -141,6 +142,13 @@ class Qwen2_5_VLProcessor(ProcessorMixin):
         if videos is not None:
             videos_inputs = self.image_processor(images=None, videos=videos, **output_kwargs["images_kwargs"])
             video_grid_thw = videos_inputs["video_grid_thw"]
+            # for i in range(videos[0].shape[0]):
+            #     np_img = (videos[0][i].permute(1,2,0).cpu().numpy()).astype(np.uint8)
+            #     np_img = cv2.cvtColor(np_img, cv2.COLOR_RGB2BGR)
+            #     image_tensor, _ = image2tensor(np_img)
+            #     image_tensor_flat = image_tensor.permute(1, 0, 2, 3).contiguous().view(image_tensor.shape[1], -1)
+            #     all_image_tensors.append(image_tensor_flat)
+            # videos_inputs["depth_values"] = torch.cat(all_image_tensors, dim=1)
 
             fps = output_kwargs["videos_kwargs"].pop("fps", 2.0)
             if isinstance(fps, (int, float)):

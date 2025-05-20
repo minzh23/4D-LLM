@@ -302,7 +302,6 @@ def main(script_args, training_args, model_args):
         max_pixels=script_args.max_pixels,
         min_pixels=script_args.min_pixels,
     )
-    trainer.model.config.use_cache = True
     
     if training_args.resume_from_checkpoint is not None:
         checkpoint = training_args.resume_from_checkpoint
@@ -317,13 +316,13 @@ def main(script_args, training_args, model_args):
 
 
 if __name__ == "__main__":
-    local_rank = int(os.environ.get("LOCAL_RANK", 0))
-    if local_rank == 0:
-        import debugpy
-        debugpy.listen(("127.0.0.1", 5678))
-        print("Waiting for debugger to attach...")
-        debugpy.wait_for_client()
-        print("Debugger attached, starting execution...")
+    # local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    # if local_rank == 0:
+    #     import debugpy
+    #     debugpy.listen(("127.0.0.1", 5678))
+    #     print("Waiting for debugger to attach...")
+    #     debugpy.wait_for_client()
+    #     print("Debugger attached, starting execution...")
     parser = TrlParser((GRPOScriptArguments, GRPOConfig, ModelConfig))
     script_args, training_args, model_args = parser.parse_args_and_config()
     main(script_args, training_args, model_args)

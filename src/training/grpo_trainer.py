@@ -48,7 +48,7 @@ from trl.models import create_reference_model, prepare_deepspeed, unwrap_model_f
 from trl.trainer.grpo_config import GRPOConfig
 from trl.trainer.utils import generate_model_card, get_comet_experiment_url
 
-from qwen_vl_utils import process_vision_info
+from src.qwen_vl_utils_custom.vision_process import process_vision_info
 from src.qwen2_5_vl_custom.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
 from src.training.data import image2tensor, get_image_info, get_video_info, read_frame_decord, smart_scale
 from PIL import Image
@@ -511,9 +511,8 @@ class Qwen2VLGRPOTrainer(Trainer):
             images=images,
             videos=videos,
             return_tensors="pt",
-            padding=True,
-            padding_side="right",
-            add_special_tokens=False,
+            padding=False,
+            **video_kwargs,
         )
         
         
@@ -621,7 +620,7 @@ class Qwen2VLGRPOTrainer(Trainer):
                 del prompt_inputs["second_per_grid_ts"]
                 # prompt_inputs["second_per_grid_ts"] = torch.tensor(prompt_inputs["second_per_grid_ts"]).repeat(len(prompt_completion_ids), 1)
         
-        # prompt_inputs["depth_values"] = prompt_inputs["depth_values"].repeat(len(prompt_completion_ids), 1)
+        prompt_inputs["depth_values"] = prompt_inputs["depth_values"].repeat(len(prompt_completion_ids), 1)
         
         
         try:
