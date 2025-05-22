@@ -30,6 +30,12 @@ MANIFEST
 OmniSpatial/
 OmniSpatial_Old/
 Video-R1-data/
+Video-R1/
+VSI-Bench/
+qaego4d/
+qaego4d_answer/
+ego4d_data/
+v1/
 image/
 data.json
 OmniSpatial.zip
