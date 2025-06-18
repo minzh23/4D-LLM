@@ -36,6 +36,8 @@ for item in ds:
         }
     ]
 
+    ans = item["ground_truth"]
+
     # 构造最终 JSON 条目
     output.append({
         "id": item["id"],
@@ -46,6 +48,7 @@ for item in ds:
         "data_type": "video",
         "problem": item["question"],  
         "options": item["options"], 
+        "solution": f"<answer>{ans}</answer>"
     })
 
 # 写入 JSON 文件

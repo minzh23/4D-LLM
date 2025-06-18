@@ -17,14 +17,13 @@ import wandb
 # debugpy.wait_for_client()
 # print("Debugger attached, starting execution...")
 
-wandb.init(
-    project="4d-llm-eval",  # 项目名称，替换为你自己的项目名
-    name="video-r1_2-stage-training_all_omni",  # 本次 run 的名字
-)
+# wandb.init(
+#     project="4d-llm-eval",  # 项目名称，替换为你自己的项目名
+#     name="video-r1_2-stage-training_all_omni",  # 本次 run 的名字
+# )
 
 # 1. 加载模型
-checkpoint_path = "output/video-r1_stage2/checkpoint-6363"
-original_model_path = "Qwen/Qwen2.5-eVL-3B-Instruct"
+checkpoint_path = "/cephfs/ylshare/zihan/4D-LLM/output/sft_stage2/checkpoint-10349"
 
 model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
     checkpoint_path,
@@ -37,12 +36,13 @@ model.eval()
 processor = AutoProcessor.from_pretrained(checkpoint_path)
 
 # 2. 加载测试集
-test_file = "OmniSpatial/converted_data.json"
+test_file = "/cephfs/ylshare/zihan/4D-LLM/OmniSpatial/test_data.json"
 with open(test_file, "r", encoding="utf-8") as f:
     test_data = json.load(f)
 
 # 3. 初始化统计
 correct_count = 0
+none_count = 0
 total_count = len(test_data)
 interval = 10
 accuracy_log = []
@@ -50,18 +50,19 @@ accuracy_log = []
 # 4. 主循环
 with tqdm(total=total_count, desc="Processing", unit="sample") as pbar:
     for sample in test_data:
-        image_path = "OmniSpatial//" + sample["image"]
+        image_path = "/cephfs/ylshare/zihan/4D-LLM/OmniSpatial/" + sample["image"]
         all_image_tensors = []
         conversation = sample["conversations"]
 
         input_text = conversation[0]["value"]
-        input_text += "Answer in the format: The correct answer is A/B/C/D."
+        input_text += "\n\nThink carefully and answer this question. You should output your answer, which should be a single letter (A, B, C, or D). You should include your answer between <answer> and </answer>. For example, if the answer is A, you should output <answer>A</answer>."
         true_answer = conversation[1]["value"].strip()
 
         # 加载图像
         image = Image.open(image_path).convert("RGB")
         image_tensor, _ = image2tensor(cv2.imread(image_path))
         image_tensor = image_tensor.to(dtype=torch.float16, device=model.device)
+        image_tensor = image_tensor.squeeze(0)
         all_image_tensors.append(image_tensor)
 
         # 构造消息格式
@@ -72,8 +73,8 @@ with tqdm(total=total_count, desc="Processing", unit="sample") as pbar:
                     {
                         "type": "image",
                         "image": image,
-                        "resized_height": image_tensor.shape[2],
-                        "resized_width": image_tensor.shape[3],
+                        "resized_height": image_tensor.shape[1],
+                        "resized_width": image_tensor.shape[2],
                     },
                     {"type": "text", "text": input_text},
                 ],
@@ -105,8 +106,17 @@ with tqdm(total=total_count, desc="Processing", unit="sample") as pbar:
             generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )[0]
 
-        match = re.search(r"<answer>([A-D])</answer>", response)
+        match = re.search(r"([A-D]).</answer>", response)
+        if match is None: 
+            match = re.search(r"([A-D])</answer>", response)
         predicted_answer = match.group(1) if match else "None"
+
+        # print(predicted_answer, true_answer)
+
+        if predicted_answer == "None":
+            none_count += 1
+            print(response)
+            continue
 
         # 判断是否正确
         if predicted_answer in true_answer:
@@ -118,7 +128,7 @@ with tqdm(total=total_count, desc="Processing", unit="sample") as pbar:
         gc.collect()
 
         # 更新进度条
-        accuracy = correct_count / (pbar.n + 1) * 100
+        accuracy = correct_count / (pbar.n + 1 - none_count) * 100
         pbar.set_postfix(Correct=correct_count, Accuracy=f"{accuracy:.2f}%")
 
         # 每 interval 步记录准确率
@@ -129,16 +139,16 @@ with tqdm(total=total_count, desc="Processing", unit="sample") as pbar:
                 "correct": correct_count,
                 "accuracy": round(accuracy, 2)
             })
-            wandb.log({
-                "step": pbar.n + 1,
-                "correct": correct_count,
-                "accuracy": accuracy
-            })
+            # wandb.log({
+            #     "step": pbar.n + 1,
+            #     "correct": correct_count,
+            #     "accuracy": accuracy
+            # })
         
         pbar.update(1)
 
 # 5. 最终结果
-accuracy = correct_count / total_count * 100
+accuracy = correct_count / (total_count - none_count) * 100
 print(f"\nTotal: {total_count}, Correct: {correct_count}, Accuracy: {accuracy:.2f}%")
 
 wandb.finish()

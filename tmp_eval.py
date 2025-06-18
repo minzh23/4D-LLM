@@ -92,32 +92,12 @@ if args.use_deepspeed:
 
 # Initialize accelerator with DeepSpeed
 if args.use_deepspeed:
-    try:
-        from accelerate import DeepSpeedPlugin
-        import os
-        # Set DeepSpeed environment variables for single node
-        os.environ['MASTER_ADDR'] = 'localhost'
-        os.environ['MASTER_PORT'] = '9901'
-        os.environ['RANK'] = '0'
-        os.environ['LOCAL_RANK'] = '0'
-        os.environ['WORLD_SIZE'] = '1'
-        
-        deepspeed_plugin = DeepSpeedPlugin(
-            hf_ds_config=deepspeed_config,
-            zero3_init_flag=True,
-            zero3_save_16bit_model=True,
-        )
-        accelerator = Accelerator(
-            deepspeed_plugin=deepspeed_plugin,
-            mixed_precision='bf16'
-        )
-        print("DeepSpeed enabled for memory optimization")
-    except Exception as e:
-        print(f"DeepSpeed initialization failed: {e}")
-        print("Falling back to standard accelerator")
-        accelerator = Accelerator(mixed_precision='bf16')
+    accelerator = Accelerator(
+        deepspeed_plugin=deepspeed_config,
+        mixed_precision='bf16'
+    )
 else:
-    accelerator = Accelerator(mixed_precision='bf16')
+    accelerator = Accelerator()
 
 is_main_process = accelerator.is_main_process
 if not is_main_process:
@@ -141,7 +121,7 @@ else:
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(MODEL_PATH, **model_init_kwargs)
 
 model.eval()
-model.config.use_cache = False  # 关闭cache以节省内存
+model.config.use_cache = True
 
 processor = Qwen2_5_VLProcessor.from_pretrained(
     MODEL_PATH,
@@ -156,7 +136,7 @@ generation_config = {
     "do_sample": True,
     "pad_token_id": processor.tokenizer.pad_token_id,
     "eos_token_id": processor.tokenizer.eos_token_id,
-    "use_cache": False,  # 关闭cache以节省内存
+    "use_cache": True, 
 }
 
 # Prepare model with accelerator (this will handle DeepSpeed if enabled)

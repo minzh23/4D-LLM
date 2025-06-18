@@ -44,6 +44,7 @@ checkpoints/
 wandb/
 test.py
 log/
+aws/
 filtered_llava_video.json
 
 # PyInstaller
